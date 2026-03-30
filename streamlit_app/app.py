@@ -59,7 +59,7 @@ with st.form("ask"):
         placeholder="Ej: ¿Qué mercados han tenido mayor volumen en las últimas 24 horas?",
     )
     show_sql = st.checkbox("Mostrar SQL generado", value=True)
-    st.caption("Bonus: el agente puede usar una herramienta de noticias (GDELT) si preguntas por noticias.")
+    st.caption("Bonus: si preguntas por noticias, usa HLTV (CSGO/CS2).")
     submitted = st.form_submit_button("Enviar")
 
 if submitted and question.strip():
@@ -70,10 +70,15 @@ if submitted and question.strip():
         except Exception as e:  # noqa: BLE001
             st.error(f"Error ejecutando el agente: {e}")
             out = {"question": question.strip(), "error": str(e)}
+    if out is None:
+        out = {"question": question.strip(), "error": "El agente devolvió None."}
     st.session_state.history.append(out)
 
 for i, item in enumerate(reversed(st.session_state.history), start=1):
     st.markdown(f"### Consulta #{len(st.session_state.history) - i + 1}")
+    if not isinstance(item, dict):
+        st.error(f"Entrada inválida en historial: {type(item).__name__}")
+        continue
     st.write(item.get("answer", ""))
     if item.get("error"):
         st.error(item.get("error"))
