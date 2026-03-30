@@ -1,6 +1,7 @@
 import os
 
 import streamlit as st
+from dotenv import find_dotenv, load_dotenv
 
 from src.agent.langgraph_agent import AgentConfig, build_agent
 
@@ -11,6 +12,8 @@ def _env(name: str, default: str | None = None) -> str | None:
         return default
     return v
 
+
+load_dotenv(find_dotenv(usecwd=True), override=False)
 
 st.set_page_config(page_title="Polymarket CSGO Chatbot", layout="centered")
 st.title("Chatbot Polymarket (CSGO) · LangGraph + Neon")

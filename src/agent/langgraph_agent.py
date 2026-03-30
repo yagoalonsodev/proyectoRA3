@@ -17,6 +17,9 @@ import xml.etree.ElementTree as ET
 class AgentConfig:
     neon_database_url: str
     llm_provider: str = "ollama"  # "ollama" | "openai"
+    # OpenAI
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4.1-mini"
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "deepseek-coder:6.7b"
