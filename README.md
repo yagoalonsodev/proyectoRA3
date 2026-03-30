@@ -23,13 +23,22 @@ Este proyecto implementa:
 cp .env.example .env
 ```
 
-2. Arranca Airflow:
+2. Crea el esquema del data warehouse en Neon (una vez por proyecto; si no, la base queda sin tablas y el pipeline no puede cargar datos):
+
+```bash
+pip install 'psycopg[binary]'   # si aún no lo tienes
+python scripts/init_neon_schema.py
+```
+
+El script lee `NEON_DATABASE_URL` desde `.env` y ejecuta `sql/schema.sql` (schema `polymarket` + tablas).
+
+3. Arranca Airflow:
 
 ```bash
 docker compose up -d
 ```
 
-3. UI Airflow: `http://localhost:8080`
+4. UI Airflow: `http://localhost:8080`
 
 - Usuario: `yago`
 - Password: `yago`
