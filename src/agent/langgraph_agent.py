@@ -58,6 +58,34 @@ def _clean_sql(raw: str) -> str:
     return s
 
 
+def _is_active_markets_question(question: str) -> bool:
+    """Preguntas tipo enunciado: mercados más activos / actividad actual."""
+    ql = (question or "").lower()
+    return bool(
+        re.search(
+            r"más activo|más activos|mas activo|mas activos|"
+            r"mercados? (más )?activos|activos actualmente|más activos actualmente",
+            ql,
+        )
+    )
+
+
+def _format_active_markets_answer(rows: list[dict[str, Any]], *, limit: int = 15) -> str:
+    lines: list[str] = [
+        "Mercados activos (ordenados por última actualización en Polymarket; proxy de “actividad reciente”):"
+    ]
+    for i, r in enumerate(rows[:limit], start=1):
+        title = r.get("title") or r.get("question") or r.get("market_id")
+        ts = r.get("updated_at")
+        if ts is not None:
+            lines.append(f"{i}. {title} — actualizado: {ts}")
+        else:
+            lines.append(f"{i}. {title}")
+    if len(rows) > limit:
+        lines.append(f"(Mostrando {limit} de {len(rows)} resultados.)")
+    return "\n".join(lines)
+
+
 def _is_news_only_question(question: str) -> bool:
     """True si el usuario pide noticias (HLTV/CSGO) sin mezclar con consultas analíticas SQL."""
     ql = (question or "").lower()
@@ -156,9 +184,11 @@ def _fallback_sql(question: str) -> str | None:
         order by abs(agg.p_max - agg.p_min) desc nulls last
         limit 10;
         """.strip()
-    if "más activo" in q or "mas activo" in q or "activos" in q:
+    if re.search(r"más activo|más activos|mas activo|mas activos|\bactivos actualmente\b", q):
         return """
-        select market_id, title, updated_at
+        select market_id,
+               coalesce(nullif(trim(title), ''), nullif(trim(question), ''), market_id::text) as title,
+               updated_at
         from polymarket.dim_market
         where active is true
         order by updated_at desc nulls last
@@ -474,6 +504,9 @@ def build_agent(cfg: AgentConfig):
         "Responde en español, claro y conciso. Si hay 0 filas, dilo y sugiere otra consulta.\n"
         "No inventes: basa la respuesta en el preview de filas y el recuento.\n"
         "Si te paso NEWS (lista de noticias HLTV), úsala como contexto adicional.\n"
+        "Si la pregunta es sobre mercados 'más activos' o 'activos actualmente' y hay filas con title: "
+        "enumera los títulos (y updated_at si existe). "
+        "NO digas que falta contexto ni pidas más datos si Filas_preview ya trae resultados.\n"
     )
     system_answer_news_only = (
         "El usuario pide NOTICIAS sobre Counter-Strike (CSGO/CS2) desde HLTV (RSS).\n"
@@ -504,6 +537,10 @@ def build_agent(cfg: AgentConfig):
                 ]
             )
             state["answer"] = (msg.content or "").strip()
+            return state
+        # Demo estable: lista legible sin depender del LLM para esta pregunta del enunciado.
+        if _is_active_markets_question(q) and isinstance(rows, list) and rows:
+            state["answer"] = _format_active_markets_answer(rows)
             return state
         msg = llm.invoke(
             [
