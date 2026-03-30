@@ -32,6 +32,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       NEON_DATABASE_URL: ${NEON_DATABASE_URL:-}
+      # Permite importar /opt/airflow/src desde los DAGs
+      PYTHONPATH: /opt/airflow
       # Logs: carpeta base y que el webserver lea del mismo contenedor (evita 404 en UI)
       AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
       AIRFLOW__LOGGING__WORKER_LOG_SERVER_ADDRESS: 127.0.0.1

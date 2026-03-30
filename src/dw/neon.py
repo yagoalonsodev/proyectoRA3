@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -21,8 +22,26 @@ def ensure_schema(engine: Engine, *, schema_sql: str) -> None:
     with engine.begin() as conn:
         conn.execute(text(schema_sql))
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Postgres jsonb no acepta NaN/Inf; Pandas puede introducirlos en dicts."""
+    if obj is None:
+        return None
+    if isinstance(obj, float):
+        return None if math.isnan(obj) or math.isinf(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(x) for x in obj]
+    return obj
+
+
 def _json_dumps(v: Any) -> str:
-    return json.dumps(v, ensure_ascii=False, default=str)
+    return json.dumps(
+        _sanitize_for_json(v),
+        ensure_ascii=False,
+        default=str,
+        allow_nan=False,
+    )
 
 
 def _maybe_json_loads(v: Any) -> Any:
