@@ -38,6 +38,7 @@ agent = build_agent(
         openai_model=openai_model,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
+        enable_news_tool=True,
     )
 )
 
@@ -50,6 +51,7 @@ with st.form("ask"):
         placeholder="Ej: ¿Qué mercados han tenido mayor volumen en las últimas 24 horas?",
     )
     show_sql = st.checkbox("Mostrar SQL generado", value=True)
+    st.caption("Bonus: el agente puede usar una herramienta de noticias (GDELT) si preguntas por noticias.")
     submitted = st.form_submit_button("Enviar")
 
 if submitted and question.strip():

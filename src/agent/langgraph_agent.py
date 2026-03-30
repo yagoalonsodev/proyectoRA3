@@ -6,32 +6,64 @@ from typing import Any
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+from sqlalchemy.engine import make_url
 from sqlalchemy import create_engine, text
+import requests
 
 
 @dataclass
 class AgentConfig:
     neon_database_url: str
     llm_provider: str = "ollama"  # "ollama" | "openai"
-    # OpenAI
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-4.1-mini"
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "deepseek-coder:6.7b"
+    # Bonus tools
+    enable_news_tool: bool = True
 
 
 class AgentState(dict):
-    # keys: question, sql, rows, answer, error
+    # keys: question, sql, rows, news, answer, error
     pass
 
 
-def run_sql(neon_database_url: str, sql: str) -> list[dict[str, Any]]:
+def database_tool(neon_database_url: str, sql: str) -> list[dict[str, Any]]:
+    """Database Tool (obligatoria): ejecuta SQL contra Neon/Postgres y devuelve filas."""
     engine = create_engine(neon_database_url, pool_pre_ping=True)
     with engine.connect() as conn:
         result = conn.execute(text(sql))
         cols = list(result.keys())
         return [dict(zip(cols, row)) for row in result.fetchall()]
+
+def news_tool(query: str, *, max_records: int = 5) -> list[dict[str, Any]]:
+    """Bonus Tool: busca noticias públicas via GDELT (sin API key)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    url = "https://api.gdeltproject.org/api/v2/doc/doc"
+    params = {
+        "query": q,
+        "mode": "ArtList",
+        "format": "json",
+        "maxrecords": str(int(max_records)),
+        "sort": "hybridrel",
+    }
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json() if r.content else {}
+    arts = data.get("articles") or []
+    out: list[dict[str, Any]] = []
+    for a in arts:
+        out.append(
+            {
+                "title": a.get("title"),
+                "url": a.get("url"),
+                "sourceCountry": a.get("sourceCountry"),
+                "sourceCollection": a.get("sourceCollection"),
+                "seendate": a.get("seendate"),
+            }
+        )
+    return out
 
 
 def build_agent(cfg: AgentConfig):
@@ -48,6 +80,14 @@ def build_agent(cfg: AgentConfig):
         )
     else:
         raise ValueError(f"llm_provider no soportado: {cfg.llm_provider!r}")
+
+    # Asegura compatibilidad con SQLAlchemy: aceptar postgresql+psycopg:// también.
+    try:
+        u = make_url(cfg.neon_database_url)
+        if u.drivername == "postgresql+psycopg":
+            cfg = AgentConfig(**{**cfg.__dict__, "neon_database_url": cfg.neon_database_url.replace("postgresql+psycopg://", "postgresql://", 1)})
+    except Exception:
+        pass
 
     system_sql = (
         "Eres un asistente de datos. Genera UNA consulta SQL válida para Postgres.\n"
@@ -73,25 +113,41 @@ def build_agent(cfg: AgentConfig):
         state["sql"] = (msg.content or "").strip().rstrip(";") + ";"
         return state
 
+    def news_node(state: AgentState) -> AgentState:
+        if not cfg.enable_news_tool:
+            return state
+        q = str(state.get("question") or "").strip().lower()
+        # Activación simple (no bloquea el flujo normal).
+        if "noticia" in q or "news" in q or "twitter" in q or "x " in q or " x" in q:
+            try:
+                state["news"] = news_tool(str(state.get("question") or ""), max_records=5)
+            except Exception as e:  # noqa: BLE001
+                state["news"] = []
+                state["news_error"] = str(e)
+        return state
+
     def exec_node(state: AgentState) -> AgentState:
         sql = str(state.get("sql") or "")
-        rows = run_sql(cfg.neon_database_url, sql)
+        # Requisito 14: Database Tool obligatoria (aquí se usa).
+        rows = database_tool(cfg.neon_database_url, sql)
         state["rows"] = rows
         return state
 
     system_answer = (
         "Eres un asistente. Te doy la pregunta, el SQL ejecutado y las filas devueltas.\n"
         "Responde en español, claro y conciso. Si hay 0 filas, dilo y sugiere otra consulta.\n"
+        "Si te paso NEWS (lista de noticias), puedes usarlo como contexto adicional.\n"
     )
 
     def answer_node(state: AgentState) -> AgentState:
         q = str(state.get("question") or "")
         sql = str(state.get("sql") or "")
         rows = state.get("rows") or []
+        news = state.get("news") or []
         msg = llm.invoke(
             [
                 {"role": "system", "content": system_answer},
-                {"role": "user", "content": f"Pregunta: {q}\nSQL: {sql}\nFilas: {rows}"},
+                {"role": "user", "content": f"Pregunta: {q}\nSQL: {sql}\nFilas: {rows}\nNEWS: {news}"},
             ]
         )
         state["answer"] = (msg.content or "").strip()
@@ -99,10 +155,12 @@ def build_agent(cfg: AgentConfig):
 
     g = StateGraph(AgentState)
     g.add_node("sql", sql_node)
+    g.add_node("news", news_node)
     g.add_node("exec", exec_node)
     g.add_node("answer", answer_node)
     g.set_entry_point("sql")
-    g.add_edge("sql", "exec")
+    g.add_edge("sql", "news")
+    g.add_edge("news", "exec")
     g.add_edge("exec", "answer")
     g.add_edge("answer", END)
     return g.compile()
