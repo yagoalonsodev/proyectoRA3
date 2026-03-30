@@ -22,4 +22,6 @@ Definidas en `sql/schema.sql`:
 
 - `polymarket.dim_market`
 - `polymarket.fact_market_snapshot`
+- `polymarket.dim_outcome`
+- `polymarket.fact_outcome_snapshot`
 

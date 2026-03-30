@@ -21,6 +21,26 @@ def ensure_schema(engine: Engine, *, schema_sql: str) -> None:
     with engine.begin() as conn:
         conn.execute(text(schema_sql))
 
+def _json_dumps(v: Any) -> str:
+    return json.dumps(v, ensure_ascii=False, default=str)
+
+
+def _maybe_json_loads(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        if s[0] in "[{":
+            try:
+                return json.loads(s)
+            except Exception:  # noqa: BLE001
+                return v
+    return v
+
 
 def upsert_market(engine: Engine, *, market: dict[str, Any]) -> None:
     market_id = str(market.get("id") or market.get("marketId") or market.get("market_id") or "")
@@ -51,7 +71,7 @@ def upsert_market(engine: Engine, *, market: dict[str, Any]) -> None:
         "archived": market.get("archived"),
         "created_at": _ts(market.get("createdAt") or market.get("created_at")),
         "updated_at": _ts(market.get("updatedAt") or market.get("updated_at")),
-        "raw": json.dumps(market),
+        "raw": _json_dumps(market),
     }
 
     sql = text(
@@ -101,9 +121,9 @@ def insert_snapshot(engine: Engine, *, snapshot_ts: datetime, market: dict[str, 
         "liquidity": _num(market.get("liquidity")),
         "best_bid": _num(market.get("bestBid") or market.get("best_bid")),
         "best_ask": _num(market.get("bestAsk") or market.get("best_ask")),
-        "outcome_prices": json.dumps(market.get("outcomePrices") or market.get("outcome_prices")),
-        "outcomes": json.dumps(market.get("outcomes")),
-        "raw": json.dumps(market),
+        "outcome_prices": _json_dumps(_maybe_json_loads(market.get("outcomePrices") or market.get("outcome_prices"))),
+        "outcomes": _json_dumps(_maybe_json_loads(market.get("outcomes"))),
+        "raw": _json_dumps(market),
     }
 
     sql = text(
@@ -124,6 +144,69 @@ def insert_snapshot(engine: Engine, *, snapshot_ts: datetime, market: dict[str, 
           best_ask = excluded.best_ask,
           outcome_prices = excluded.outcome_prices,
           outcomes = excluded.outcomes,
+          raw = excluded.raw
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(sql, payload)
+
+
+def upsert_outcome(
+    engine: Engine,
+    *,
+    market_id: str,
+    outcome_index: int,
+    outcome_label: str | None,
+) -> str:
+    outcome_id = f"{market_id}:{outcome_index}"
+    payload = {
+        "outcome_id": outcome_id,
+        "market_id": market_id,
+        "outcome_index": outcome_index,
+        "outcome_label": outcome_label,
+    }
+    sql = text(
+        """
+        insert into polymarket.dim_outcome (outcome_id, market_id, outcome_index, outcome_label)
+        values (:outcome_id, :market_id, :outcome_index, :outcome_label)
+        on conflict (outcome_id) do update set
+          outcome_label = excluded.outcome_label
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(sql, payload)
+    return outcome_id
+
+
+def insert_outcome_snapshot(
+    engine: Engine,
+    *,
+    snapshot_ts: datetime,
+    market_id: str,
+    outcome_id: str,
+    extracted_at: str | None,
+    probability: float | None,
+    raw: dict[str, Any],
+) -> None:
+    payload = {
+        "snapshot_ts": snapshot_ts,
+        "market_id": market_id,
+        "outcome_id": outcome_id,
+        "extracted_at": extracted_at,
+        "probability": probability,
+        "raw": _json_dumps(raw),
+    }
+    sql = text(
+        """
+        insert into polymarket.fact_outcome_snapshot (
+          snapshot_ts, market_id, outcome_id, extracted_at, probability, raw
+        )
+        values (
+          :snapshot_ts, :market_id, :outcome_id, :extracted_at, :probability, cast(:raw as jsonb)
+        )
+        on conflict (snapshot_ts, market_id, outcome_id) do update set
+          extracted_at = excluded.extracted_at,
+          probability = excluded.probability,
           raw = excluded.raw
         """
     )

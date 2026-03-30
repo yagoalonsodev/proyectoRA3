@@ -18,7 +18,15 @@ from airflow.sdk import DAG
 from src.datalake.markers import write_success_marker
 from src.datalake.s3_paths import S3Location
 from src.datalake.write_raw_delta import write_raw_markets_delta_to_s3
-from src.dw.neon import NeonConfig, ensure_schema, insert_snapshot, make_engine, upsert_market
+from src.dw.neon import (
+    NeonConfig,
+    ensure_schema,
+    insert_outcome_snapshot,
+    insert_snapshot,
+    make_engine,
+    upsert_market,
+    upsert_outcome,
+)
 from src.polymarket.client import PolymarketClient, filter_markets_by_keywords
 from src.polymarket.snapshot import add_snapshot_metadata, snapshot_meta
 from src.transform.normalize import RawPartition, read_raw_markets_partition, snapshot_timestamp_from_partition
@@ -126,6 +134,48 @@ def _transform_and_load_to_neon(**context) -> dict:
     for m in markets:
         upsert_market(engine, market=m)
         insert_snapshot(engine, snapshot_ts=snapshot_ts, market=m)
+        # Normalización de outcomes: outcomes + outcomePrices alineados por índice
+        market_id = str(m.get("id") or m.get("marketId") or m.get("market_id") or "")
+        if not market_id:
+            continue
+        outcomes = m.get("outcomes")
+        prices = m.get("outcomePrices") or m.get("outcome_prices")
+        # En RAW suelen venir como strings JSON por compatibilidad con Delta
+        import json
+
+        if isinstance(outcomes, str):
+            try:
+                outcomes = json.loads(outcomes)
+            except Exception:  # noqa: BLE001
+                outcomes = None
+        if isinstance(prices, str):
+            try:
+                prices = json.loads(prices)
+            except Exception:  # noqa: BLE001
+                prices = None
+
+        if isinstance(outcomes, list) and isinstance(prices, list):
+            for idx, label in enumerate(outcomes):
+                outcome_id = upsert_outcome(
+                    engine,
+                    market_id=market_id,
+                    outcome_index=idx,
+                    outcome_label=str(label) if label is not None else None,
+                )
+                prob = None
+                try:
+                    prob = float(prices[idx]) if idx < len(prices) and prices[idx] is not None else None
+                except Exception:  # noqa: BLE001
+                    prob = None
+                insert_outcome_snapshot(
+                    engine,
+                    snapshot_ts=snapshot_ts,
+                    market_id=market_id,
+                    outcome_id=outcome_id,
+                    extracted_at=m.get("_extracted_at"),
+                    probability=prob,
+                    raw={"outcome_label": label, "outcome_price": prices[idx] if idx < len(prices) else None},
+                )
 
     logging.info("DW cargado: markets=%d snapshot_ts=%s", len(markets), snapshot_ts.isoformat())
     return {"loaded_markets": len(markets), "snapshot_ts": snapshot_ts.isoformat()}
