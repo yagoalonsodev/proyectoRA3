@@ -1,0 +1,36 @@
+# Docker Compose para Apache Airflow
+# Imagen: apache/airflow:slim-3.1.8rc2-python3.13
+
+services:
+  airflow:
+    image: apache/airflow:slim-3.1.8rc2-python3.13
+    container_name: airflow
+    command: standalone
+    # Las variables DATABRICKS_* se leen del archivo .env del mismo directorio
+    environment:
+      # Instala el provider Databricks al arrancar
+      # aiofiles: requerido por el plugin del provider Databricks en Airflow 3
+      _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-databricks aiofiles
+      # Conexión databricks_default desde variables del .env (host + token PAT)
+      AIRFLOW_CONN_DATABRICKS_DEFAULT: '{"conn_type":"databricks","host":"${DATABRICKS_HOST}","password":"${DATABRICKS_TOKEN}"}'
+      DATABRICKS_SQL_WAREHOUSE_ID: ${DATABRICKS_SQL_WAREHOUSE_ID:-}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+      # Usuario yago / contraseña yago (rol Admin)
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "yago:admin"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/config/simple_auth_manager_passwords.json
+      # Logs: carpeta base y que el webserver lea del mismo contenedor (evita 404 en UI)
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+      AIRFLOW__LOGGING__WORKER_LOG_SERVER_ADDRESS: 127.0.0.1
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./config:/opt/airflow/config
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
