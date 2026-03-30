@@ -36,6 +36,7 @@ class AgentState(TypedDict, total=False):
     answer: str
     error: str
     news_error: str
+    news_only: bool
 
 
 def _clean_sql(raw: str) -> str:
@@ -55,6 +56,25 @@ def _clean_sql(raw: str) -> str:
     if s and not s.endswith(";"):
         s += ";"
     return s
+
+
+def _is_news_only_question(question: str) -> bool:
+    """True si el usuario pide noticias (HLTV/CSGO) sin mezclar con consultas analíticas SQL."""
+    ql = (question or "").lower()
+    if not ql.strip():
+        return False
+    wants_news = any(
+        k in ql for k in ("noticia", "noticias", "news", "hltv")
+    )
+    # Métricas / DW: si pide volumen, probabilidad, liquidez o ranking de mercados, no es solo-noticias.
+    wants_analytics = bool(
+        re.search(
+            r"volumen|volume|probabilidad|prob\b|liquidez|liquidity|"
+            r"más activo|mas activo|activos actualmente|mercados con mayor",
+            ql,
+        )
+    )
+    return wants_news and not wants_analytics
 
 
 def _is_safe_select(sql: str) -> bool:
@@ -377,6 +397,10 @@ def build_agent(cfg: AgentConfig):
 
     def sql_node(state: AgentState) -> AgentState:
         q = str(state.get("question") or "")
+        if _is_news_only_question(q):
+            state["news_only"] = True
+            state["sql"] = "SELECT 1 AS ok;"
+            return state
         msg = llm.invoke(
             [
                 {"role": "system", "content": system_sql},
@@ -391,6 +415,17 @@ def build_agent(cfg: AgentConfig):
         return state
 
     def exec_node(state: AgentState) -> AgentState:
+        if state.get("news_only"):
+            # No mezclar con SQL de volumen: solo marcamos que la BD respondió (Database Tool usada).
+            try:
+                rows = database_tool(cfg.neon_database_url, "SELECT 1 AS ok;")
+                state["rows"] = rows
+                state["sql"] = "SELECT 1 AS ok;"
+            except Exception as e:  # noqa: BLE001
+                state["rows"] = []
+                state["error"] = str(e)
+            return state
+
         sql = str(state.get("sql") or "")
         # Requisito 14: Database Tool obligatoria (aquí se usa).
         fb = _fallback_sql(str(state.get("question") or ""))
@@ -422,7 +457,7 @@ def build_agent(cfg: AgentConfig):
             return state
         q = str(state.get("question") or "").strip().lower()
         # Solo si el usuario pide noticias (para no ralentizar el flujo normal).
-        if "noticia" in q or "news" in q:
+        if "noticia" in q or "news" in q or "hltv" in q:
             try:
                 state["news"] = news_tool(
                     question=str(state.get("question") or ""),
@@ -438,7 +473,14 @@ def build_agent(cfg: AgentConfig):
         "Eres un asistente. Te doy la pregunta, el SQL ejecutado y las filas devueltas.\n"
         "Responde en español, claro y conciso. Si hay 0 filas, dilo y sugiere otra consulta.\n"
         "No inventes: basa la respuesta en el preview de filas y el recuento.\n"
-        "Si te paso NEWS (lista de noticias), puedes usarlo como contexto adicional.\n"
+        "Si te paso NEWS (lista de noticias HLTV), úsala como contexto adicional.\n"
+    )
+    system_answer_news_only = (
+        "El usuario pide NOTICIAS sobre Counter-Strike (CSGO/CS2) desde HLTV (RSS).\n"
+        "- Si NEWS tiene elementos: enumera 3-8 títulos con su enlace (url) y fecha si existe.\n"
+        "- NO digas que no hay noticias si NEWS no está vacía.\n"
+        "- NO hables de SQL ni de volumen/mercados salvo que el usuario lo pida explícitamente.\n"
+        "- Si NEWS está vacío o hay news_error, di que no se pudieron cargar ahora y sugiere reintentar.\n"
     )
 
     def answer_node(state: AgentState) -> AgentState:
@@ -447,6 +489,22 @@ def build_agent(cfg: AgentConfig):
         rows = state.get("rows") or []
         news = state.get("news") or []
         preview = rows[:10] if isinstance(rows, list) else rows
+        if state.get("news_only"):
+            msg = llm.invoke(
+                [
+                    {"role": "system", "content": system_answer_news_only},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Pregunta: {q}\n"
+                            f"NEWS: {news}\n"
+                            f"news_error: {state.get('news_error', '')}\n"
+                        ),
+                    },
+                ]
+            )
+            state["answer"] = (msg.content or "").strip()
+            return state
         msg = llm.invoke(
             [
                 {"role": "system", "content": system_answer},

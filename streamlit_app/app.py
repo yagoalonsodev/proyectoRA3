@@ -82,9 +82,13 @@ for i, item in enumerate(reversed(st.session_state.history), start=1):
     st.write(item.get("answer", ""))
     if item.get("error"):
         st.error(item.get("error"))
-    if show_sql:
+    news = item.get("news") or []
+    if news:
+        with st.expander("Noticias HLTV (raw)", expanded=False):
+            st.json(news)
+    if show_sql and not item.get("news_only"):
         st.code(item.get("sql", ""), language="sql")
     rows = item.get("rows", [])
-    if rows:
+    if rows and not item.get("news_only"):
         st.dataframe(rows, use_container_width=True)
 
