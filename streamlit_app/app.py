@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import streamlit as st
 from dotenv import find_dotenv, load_dotenv
@@ -13,7 +14,11 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v
 
 
-load_dotenv(find_dotenv(usecwd=True), override=False)
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+if _root_env.exists():
+    load_dotenv(_root_env, override=False)
+else:
+    load_dotenv(find_dotenv(usecwd=True), override=False)
 
 st.set_page_config(page_title="Polymarket CSGO Chatbot", layout="centered")
 st.title("Chatbot Polymarket (CSGO) · LangGraph + Neon")
@@ -59,12 +64,19 @@ with st.form("ask"):
 
 if submitted and question.strip():
     state = {"question": question.strip()}
-    out = agent.invoke(state)
+    with st.spinner("Pensando… (Ollama puede tardar un poco)"):
+        try:
+            out = agent.invoke(state)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Error ejecutando el agente: {e}")
+            out = {"question": question.strip(), "error": str(e)}
     st.session_state.history.append(out)
 
 for i, item in enumerate(reversed(st.session_state.history), start=1):
     st.markdown(f"### Consulta #{len(st.session_state.history) - i + 1}")
     st.write(item.get("answer", ""))
+    if item.get("error"):
+        st.error(item.get("error"))
     if show_sql:
         st.code(item.get("sql", ""), language="sql")
     rows = item.get("rows", [])
