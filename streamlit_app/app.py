@@ -16,17 +16,30 @@ st.set_page_config(page_title="Polymarket CSGO Chatbot", layout="centered")
 st.title("Chatbot Polymarket (CSGO) · LangGraph + Neon")
 
 neon_url = _env("NEON_DATABASE_URL")
+llm_provider = (_env("LLM_PROVIDER", "ollama") or "ollama").strip().lower()
 openai_key = _env("OPENAI_API_KEY")
-model = _env("OPENAI_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"
+openai_model = _env("OPENAI_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini"
+ollama_base_url = _env("OLLAMA_BASE_URL", "http://localhost:11434") or "http://localhost:11434"
+ollama_model = _env("OLLAMA_MODEL", "deepseek-coder:6.7b") or "deepseek-coder:6.7b"
 
 if not neon_url:
     st.error("Falta `NEON_DATABASE_URL` en el entorno.")
     st.stop()
-if not openai_key:
-    st.error("Falta `OPENAI_API_KEY` en el entorno.")
+
+if llm_provider == "openai" and not openai_key:
+    st.error("LLM_PROVIDER=openai pero falta `OPENAI_API_KEY` en el entorno.")
     st.stop()
 
-agent = build_agent(AgentConfig(neon_database_url=neon_url, openai_api_key=openai_key, openai_model=model))
+agent = build_agent(
+    AgentConfig(
+        neon_database_url=neon_url,
+        llm_provider=llm_provider,
+        openai_api_key=openai_key,
+        openai_model=openai_model,
+        ollama_base_url=ollama_base_url,
+        ollama_model=ollama_model,
+    )
+)
 
 if "history" not in st.session_state:
     st.session_state.history = []
