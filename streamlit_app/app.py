@@ -60,6 +60,7 @@ st.set_page_config(page_title="Polymarket CSGO Chatbot", layout="centered")
 st.title("Chatbot Polymarket (CSGO) · LangGraph + Neon")
 
 if "history" not in st.session_state:
+    # Cada item: {"question": str, "answer": str, "sql": str, "rows": [...], "news": [...], ...}
     st.session_state.history = []
 if "user_saved_queries" not in st.session_state:
     st.session_state.user_saved_queries = _load_user_saved()
@@ -95,6 +96,9 @@ agent = build_agent(
 with st.sidebar:
     st.markdown("### Consultas guardadas")
     st.caption("Incluye las 3 del enunciado; las que guardes se guardan en este equipo.")
+    if st.button("Borrar conversación", use_container_width=True):
+        st.session_state.history = []
+        st.rerun()
     all_q = _merged_saved_queries(st.session_state.user_saved_queries)
     for i, q in enumerate(all_q):
         label = q if len(q) <= 56 else q[:53] + "…"
@@ -102,57 +106,64 @@ with st.sidebar:
             st.session_state.question_input = q
             st.rerun()
 
-with st.form("ask"):
-    question = st.text_input(
-        "Pregunta",
-        placeholder="Ej: ¿Qué mercados han tenido mayor volumen en las últimas 24 horas?",
-        key="question_input",
-    )
-    show_sql = st.checkbox("Mostrar SQL generado", value=True)
-    st.caption("Bonus: si preguntas por noticias, usa HLTV (CSGO/CS2).")
-    col1, col2 = st.columns(2)
-    with col1:
-        submitted = st.form_submit_button("Enviar", use_container_width=True)
-    with col2:
-        save_from_form = st.form_submit_button("Guardar esta consulta", use_container_width=True)
+show_sql = st.toggle("Mostrar SQL / datos", value=True)
+st.caption("Bonus: si preguntas por noticias, usa HLTV (CSGO/CS2).")
 
-q_text = (question or "").strip()
-
-if save_from_form and q_text:
-    merged = _merged_saved_queries(st.session_state.user_saved_queries)
-    if q_text not in merged:
-        st.session_state.user_saved_queries.append(q_text)
-        _save_user_saved(st.session_state.user_saved_queries)
-        st.success("Consulta guardada (aparece en la barra lateral).")
-    else:
-        st.info("Esa consulta ya está en la lista.")
-
-if submitted and q_text:
-    state = {"question": q_text}
-    with st.spinner("Pensando… (Ollama puede tardar un poco)"):
-        try:
-            out = agent.invoke(state)
-        except Exception as e:  # noqa: BLE001
-            st.error(f"Error ejecutando el agente: {e}")
-            out = {"question": q_text, "error": str(e)}
-    if out is None:
-        out = {"question": q_text, "error": "El agente devolvió None."}
-    st.session_state.history.append(out)
-
-for i, item in enumerate(reversed(st.session_state.history), start=1):
-    st.markdown(f"### Consulta #{len(st.session_state.history) - i + 1}")
+# Render chat
+for item in st.session_state.history:
     if not isinstance(item, dict):
-        st.error(f"Entrada inválida en historial: {type(item).__name__}")
         continue
-    st.write(item.get("answer", ""))
-    if item.get("error"):
-        st.error(item.get("error"))
-    news = item.get("news") or []
-    if news:
-        with st.expander("Noticias HLTV (raw)", expanded=False):
-            st.json(news)
-    if show_sql and not item.get("news_only"):
-        st.code(item.get("sql", ""), language="sql")
-    rows = item.get("rows", [])
-    if rows and not item.get("news_only"):
-        st.dataframe(rows, use_container_width=True)
+    q = item.get("question") or ""
+    a = item.get("answer") or ""
+    if q:
+        with st.chat_message("user"):
+            st.write(q)
+    with st.chat_message("assistant"):
+        st.write(a)
+        if item.get("error"):
+            st.error(item.get("error"))
+        news = item.get("news") or []
+        if news:
+            with st.expander("Noticias HLTV (raw)", expanded=False):
+                st.json(news)
+        if show_sql and not item.get("news_only"):
+            sql = item.get("sql") or ""
+            if sql:
+                st.code(sql, language="sql")
+            rows = item.get("rows", [])
+            if rows:
+                st.dataframe(rows, use_container_width=True)
+
+# Input de chat
+prompt = st.chat_input("Escribe tu pregunta…")
+if prompt:
+    st.session_state.question_input = prompt
+    q_text = prompt.strip()
+    if q_text:
+        # Guardar desde chat (sin interrumpir)
+        if q_text not in _merged_saved_queries(st.session_state.user_saved_queries):
+            # No guardamos automáticamente; el usuario decide desde el botón.
+            pass
+        state = {"question": q_text}
+        with st.spinner("Pensando… (Ollama puede tardar un poco)"):
+            try:
+                out = agent.invoke(state)
+            except Exception as e:  # noqa: BLE001
+                out = {"question": q_text, "error": str(e), "answer": ""}
+        if out is None:
+            out = {"question": q_text, "error": "El agente devolvió None.", "answer": ""}
+        st.session_state.history.append(out)
+        st.rerun()
+
+# Botón de guardar consulta actual (lo que haya en el input más reciente)
+if st.session_state.question_input.strip():
+    if st.button("Guardar la consulta actual", use_container_width=True):
+        q_text = st.session_state.question_input.strip()
+        merged = _merged_saved_queries(st.session_state.user_saved_queries)
+        if q_text not in merged:
+            st.session_state.user_saved_queries.append(q_text)
+            _save_user_saved(st.session_state.user_saved_queries)
+            st.success("Consulta guardada (aparece en la barra lateral).")
+            st.rerun()
+        else:
+            st.info("Esa consulta ya está en la lista.")
