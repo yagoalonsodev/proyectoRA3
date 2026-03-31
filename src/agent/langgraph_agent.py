@@ -110,6 +110,26 @@ def _format_liquidity_change_answer(rows: list[dict[str, Any]], *, limit: int = 
     return "\n".join(lines)
 
 
+def _is_volume_question(question: str) -> bool:
+    ql = (question or "").lower()
+    return bool(re.search(r"\bvolumen\b|\bvolume\b", ql))
+
+
+def _format_volume_answer(rows: list[dict[str, Any]], *, limit: int = 10) -> str:
+    lines: list[str] = ["Top mercados por volumen (aprox. en la ventana solicitada):"]
+    for i, r in enumerate(rows[:limit], start=1):
+        title = r.get("title") or r.get("question") or r.get("market_id")
+        v = r.get("volume_24h") or r.get("volume_7d") or r.get("volume_change") or r.get("volume")
+        latest = r.get("volume_latest")
+        if v is not None and latest is not None:
+            lines.append(f"{i}. {title} — Δvolumen: {v} (último: {latest})")
+        elif v is not None:
+            lines.append(f"{i}. {title} — Δvolumen: {v}")
+        else:
+            lines.append(f"{i}. {title}")
+    return "\n".join(lines)
+
+
 def _is_news_only_question(question: str) -> bool:
     """True si el usuario pide noticias (HLTV/CSGO) sin mezclar con consultas analíticas SQL."""
     ql = (question or "").lower()
@@ -161,6 +181,30 @@ def _fallback_sql(question: str) -> str | None:
         join polymarket.dim_market m using (market_id)
         order by volume_24h desc nulls last
         limit 5;
+        """.strip()
+    # Si el usuario pide "más volumen" pero NO especifica ventana, asumimos 24h por defecto (demo).
+    if "volumen" in q and ("más" in q or "mas" in q) and not re.search(r"24|últim|ultim|semana|7", q):
+        return """
+        with w as (
+          select *
+          from polymarket.fact_market_snapshot
+          where snapshot_ts >= (now() - interval '24 hours')
+        ),
+        agg as (
+          select market_id,
+                 max(volume) as max_volume,
+                 min(volume) as min_volume
+          from w
+          where volume is not null and volume::text <> 'NaN'
+          group by market_id
+        )
+        select coalesce(m.title, m.question, m.market_id) as title,
+               (agg.max_volume - agg.min_volume) as volume_24h,
+               agg.max_volume as volume_latest
+        from agg
+        join polymarket.dim_market m using (market_id)
+        order by volume_24h desc nulls last
+        limit 10;
         """.strip()
     if "volumen" in q and ("semana" in q or "7" in q):
         return """
@@ -592,6 +636,9 @@ def build_agent(cfg: AgentConfig):
         # Demo estable: evita respuestas tipo "no puedo ejecutar SQL" cuando ya tenemos filas.
         if _is_liquidity_change_question(q) and isinstance(rows, list) and rows:
             state["answer"] = _format_liquidity_change_answer(rows)
+            return state
+        if _is_volume_question(q) and isinstance(rows, list) and rows:
+            state["answer"] = _format_volume_answer(rows)
             return state
         msg = llm.invoke(
             [
