@@ -184,6 +184,56 @@ def _fallback_sql(question: str) -> str | None:
         order by abs(agg.p_max - agg.p_min) desc nulls last
         limit 10;
         """.strip()
+    if ("liquidez" in q or "liquidity" in q) and ("cambio" in q or "change" in q) and (
+        "24" in q or "últim" in q or "ultim" in q
+    ):
+        return """
+        with w as (
+          select *
+          from polymarket.fact_market_snapshot
+          where snapshot_ts >= (now() - interval '24 hours')
+        ),
+        agg as (
+          select market_id,
+                 max(liquidity) as max_liquidity,
+                 min(liquidity) as min_liquidity
+          from w
+          where liquidity is not null and liquidity::text <> 'NaN'
+          group by market_id
+        )
+        select coalesce(m.title, m.question, m.market_id) as title,
+               (agg.max_liquidity - agg.min_liquidity) as liquidity_change_24h,
+               agg.max_liquidity as liquidity_latest
+        from agg
+        join polymarket.dim_market m using (market_id)
+        order by liquidity_change_24h desc nulls last
+        limit 10;
+        """.strip()
+    if ("liquidez" in q or "liquidity" in q) and ("cambio" in q or "change" in q) and (
+        "semana" in q or "7" in q
+    ):
+        return """
+        with w as (
+          select *
+          from polymarket.fact_market_snapshot
+          where snapshot_ts >= (now() - interval '7 days')
+        ),
+        agg as (
+          select market_id,
+                 max(liquidity) as max_liquidity,
+                 min(liquidity) as min_liquidity
+          from w
+          where liquidity is not null and liquidity::text <> 'NaN'
+          group by market_id
+        )
+        select coalesce(m.title, m.question, m.market_id) as title,
+               (agg.max_liquidity - agg.min_liquidity) as liquidity_change_7d,
+               agg.max_liquidity as liquidity_latest
+        from agg
+        join polymarket.dim_market m using (market_id)
+        order by liquidity_change_7d desc nulls last
+        limit 10;
+        """.strip()
     if re.search(r"más activo|más activos|mas activo|mas activos|\bactivos actualmente\b", q):
         return """
         select market_id,
