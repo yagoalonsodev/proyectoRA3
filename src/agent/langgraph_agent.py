@@ -343,40 +343,9 @@ def _filter_news_items(items: list[dict[str, Any]], *, rows: list[dict[str, Any]
     return (hit or items)[:limit]
 
 def news_tool(*, question: str, rows: list[dict[str, Any]], max_records: int = 8) -> list[dict[str, Any]]:
-    """Bonus Tool: noticias de CSGO/CS2 (equipos/torneos) sin finanzas."""
-    # Fuente primaria: HLTV RSS (estable, sin API key).
-    try:
-        items = _hltv_rss_news(max_records=max(20, int(max_records) * 5))
-        return _filter_news_items(items, rows=rows or [], limit=int(max_records))
-    except Exception:
-        # Fallback (best-effort): GDELT puede rate-limit (429); no es crítica.
-        q = _build_csgo_news_query(question or "", rows or [])
-        url = "https://api.gdeltproject.org/api/v2/doc/doc"
-        params = {
-            "query": q,
-            "mode": "ArtList",
-            "format": "json",
-            "maxrecords": str(int(max_records)),
-            "sort": "hybridrel",
-            "timespan": "7d",
-        }
-        r = requests.get(url, params=params, timeout=20)
-        if r.status_code == 429:
-            return []
-        r.raise_for_status()
-        data = r.json() if r.content else {}
-        arts = data.get("articles") or []
-        out: list[dict[str, Any]] = []
-        for a in arts:
-            out.append(
-                {
-                    "title": a.get("title"),
-                    "url": a.get("url"),
-                    "published": a.get("seendate"),
-                    "source": "GDELT",
-                }
-            )
-        return out
+    """Bonus Tool: noticias SOLO de HLTV (CSGO/CS2)."""
+    items = _hltv_rss_news(max_records=max(20, int(max_records) * 5))
+    return _filter_news_items(items, rows=rows or [], limit=int(max_records))
 
 
 def build_agent(cfg: AgentConfig):
