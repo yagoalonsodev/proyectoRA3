@@ -86,6 +86,30 @@ def _format_active_markets_answer(rows: list[dict[str, Any]], *, limit: int = 15
     return "\n".join(lines)
 
 
+def _is_liquidity_change_question(question: str) -> bool:
+    ql = (question or "").lower()
+    return bool(
+        re.search(r"liquidez|liquidity", ql)
+        and re.search(r"cambio|change", ql)
+        and re.search(r"24|últim|ultim|semana|7", ql)
+    )
+
+
+def _format_liquidity_change_answer(rows: list[dict[str, Any]], *, limit: int = 10) -> str:
+    lines: list[str] = ["Top mercados por cambio de liquidez:"]
+    for i, r in enumerate(rows[:limit], start=1):
+        title = r.get("title") or r.get("question") or r.get("market_id")
+        ch = r.get("liquidity_change_24h") or r.get("liquidity_change_7d") or r.get("liquidity_change")
+        latest = r.get("liquidity_latest")
+        if ch is not None and latest is not None:
+            lines.append(f"{i}. {title} — Δliquidez: {ch} (última: {latest})")
+        elif ch is not None:
+            lines.append(f"{i}. {title} — Δliquidez: {ch}")
+        else:
+            lines.append(f"{i}. {title}")
+    return "\n".join(lines)
+
+
 def _is_news_only_question(question: str) -> bool:
     """True si el usuario pide noticias (HLTV/CSGO) sin mezclar con consultas analíticas SQL."""
     ql = (question or "").lower()
@@ -480,6 +504,10 @@ def build_agent(cfg: AgentConfig):
         fb = _fallback_sql(str(state.get("question") or ""))
         try:
             rows = database_tool(cfg.neon_database_url, sql)
+            # Si el modelo cayó en el "SELECT 1" (fallback conservador), preferimos el fallback específico.
+            if fb and _clean_sql(sql).lower() in ("select 1 as ok;", "select 1;"):
+                rows = database_tool(cfg.neon_database_url, fb)
+                state["sql"] = fb
             # Si el modelo generó SQL válido pero inútil (0 filas) y tenemos plantilla robusta,
             # preferimos el fallback para asegurar demo funcional.
             if (not rows) and fb and _clean_sql(sql) != _clean_sql(fb):
@@ -560,6 +588,10 @@ def build_agent(cfg: AgentConfig):
         # Demo estable: lista legible sin depender del LLM para esta pregunta del enunciado.
         if _is_active_markets_question(q) and isinstance(rows, list) and rows:
             state["answer"] = _format_active_markets_answer(rows)
+            return state
+        # Demo estable: evita respuestas tipo "no puedo ejecutar SQL" cuando ya tenemos filas.
+        if _is_liquidity_change_question(q) and isinstance(rows, list) and rows:
+            state["answer"] = _format_liquidity_change_answer(rows)
             return state
         msg = llm.invoke(
             [
