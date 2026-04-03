@@ -1,8 +1,11 @@
 """
 Pipeline horario (Opción B) para mercados ACTIVOS de Polymarket filtrados por keywords CSGO.
 
-Arquitectura:
-Polymarket API -> RAW (Delta en S3) -> Sensor S3 (_SUCCESS) -> Transform + Load -> Neon (Postgres)
+Arquitectura (cada ejecución del DAG):
+Polymarket API -> RAW (Delta en S3) -> Sensor S3 (_SUCCESS) -> Transform + Load -> Neon (Postgres DW)
+
+Tras las transformaciones de la partición correspondiente, los datos se escriben en Neon en la misma corrida
+(`transform_and_load_to_neon`), cumpliendo el flujo Data Lake -> Data Warehouse del enunciado.
 """
 
 from __future__ import annotations

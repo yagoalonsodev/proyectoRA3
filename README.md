@@ -56,6 +56,7 @@ streamlit run streamlit_app/app.py
 
 - `config/` está ignorado por git (contiene contraseñas). No lo subas a GitHub.
 - El sensor del pipeline usa el objeto `_SUCCESS` en S3 para garantizar que la transformación solo corre cuando el RAW está disponible.
+- **Cada ejecución exitosa del DAG** (cada hora, con `catchup=False` solo la ventana programada) sigue la cadena del enunciado: extracción → RAW en S3 → sensor → **transformación y carga al Data Warehouse (Neon)**. La tarea `transform_and_load_to_neon` es la que materializa los snapshots en Postgres en cada corrida.
 
 ## Estructura
 
