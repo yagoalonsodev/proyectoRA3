@@ -37,6 +37,7 @@ class AgentState(TypedDict, total=False):
     error: str
     news_error: str
     news_only: bool
+    chitchat_only: bool
 
 
 def _clean_sql(raw: str) -> str:
@@ -128,6 +129,72 @@ def _format_volume_answer(rows: list[dict[str, Any]], *, limit: int = 10) -> str
         else:
             lines.append(f"{i}. {title}")
     return "\n".join(lines)
+
+
+_DATA_INTENT_RE = re.compile(
+    r"mercad|volumen|volume|probabilidad|\bprob\b|liquidez|liquidity|"
+    r"polymarket|snapshot|\bsql\b|datos?|activo|noticia|news|hltv|csgo|cs2|counter|"
+    r"precio|apuesta|bet|outcome|dim_|fact_",
+    re.IGNORECASE,
+)
+
+
+def _is_chitchat_question(question: str) -> bool:
+    """
+    Saludos / cortesía sin intención de consultar el DW (evita SELECT 1 y ruido SQL en la UI).
+    Patrones cerrados (no basta con empezar por "hi" para no colarse con "hi show me markets").
+    """
+    q_raw = (question or "").strip()
+    if not q_raw:
+        return True
+    if _DATA_INTENT_RE.search(q_raw):
+        return False
+    q = re.sub(r"[¡!¿?.…,:;'\-]+", " ", q_raw.lower())
+    q = re.sub(r"\s+", " ", q).strip()
+    if len(q) > 88:
+        return False
+    chitchat_full = (
+        r"^(hola|hi|hello|hey|buenas|buenos d[ií]as|buenas tardes|buenas noches|"
+        r"que tal|qué tal|gracias|thanks|thank you|muchas gracias|ok|vale|genial|perfecto|"
+        r"adiós|adios|chao|bye|hasta luego|nos vemos)(\s+[!?.…]+)?\s*$",
+        r"^(hola|hi|hello|hey|buenas)\s+(cómo|como)\s+(estás|estas|te va|va)(\s*\?)?\s*$",
+        r"^(cómo|como)\s+(estás|estas)(\s*\?)?\s*$",
+    )
+    if any(re.match(p, q) for p in chitchat_full):
+        return True
+    return False
+
+
+def _chitchat_reply(question: str) -> str:
+    """
+    Respuesta determinista (sin LLM): modelos código suelen repetir mal el system prompt
+    (“Me llamo Eres el asistente…”).
+    """
+    q = re.sub(r"[¡!¿?.…,:;'\-]+", " ", (question or "").lower())
+    q = re.sub(r"\s+", " ", q).strip()
+    if re.search(r"\b(gracias|thanks|thank you|muchas gracias)\b", q):
+        return (
+            "¡De nada! Si quieres, pregunta por mercados de CSGO/CS2 en Polymarket "
+            "(volumen, probabilidad, actividad) o por noticias en HLTV."
+        )
+    if re.search(r"\b(adios|adiós|chao|bye|hasta luego|nos vemos)\b", q):
+        return "¡Hasta luego! Cuando quieras, puedes consultar mercados o noticias del demo."
+    if re.fullmatch(r"(ok|vale|genial|perfecto)(\s*[!?.…]+)?", q):
+        return "Genial. Cuando quieras, dime qué quieres ver: mercados, métricas o noticias HLTV."
+    if re.search(r"\b(como estás|como estas|cómo estás|que tal|qué tal)\b", q) or re.match(
+        r"^(hola|hi|hello|hey|buenas|buenos d[ií]as|buenas tardes|buenas noches)\b",
+        q,
+    ):
+        return (
+            "¡Hola! Muy bien, gracias por preguntar. "
+            "Puedo ayudarte con mercados de CSGO/CS2 en Polymarket "
+            "(volumen, probabilidad, actividad reciente) y con noticias de HLTV. "
+            "¿Qué te gustaría consultar?"
+        )
+    return (
+        "Hola. Puedo orientarte sobre mercados CSGO/CS2 en Polymarket "
+        "y noticias de HLTV. ¿Sobre qué quieres información?"
+    )
 
 
 def _is_news_only_question(question: str) -> bool:
@@ -518,6 +585,10 @@ def build_agent(cfg: AgentConfig):
             state["news_only"] = True
             state["sql"] = "SELECT 1 AS ok;"
             return state
+        if _is_chitchat_question(q):
+            state["chitchat_only"] = True
+            state["sql"] = ""
+            return state
         msg = llm.invoke(
             [
                 {"role": "system", "content": system_sql},
@@ -532,6 +603,10 @@ def build_agent(cfg: AgentConfig):
         return state
 
     def exec_node(state: AgentState) -> AgentState:
+        if state.get("chitchat_only"):
+            state["rows"] = []
+            state["sql"] = ""
+            return state
         if state.get("news_only"):
             # No mezclar con SQL de volumen: solo marcamos que la BD respondió (Database Tool usada).
             try:
@@ -574,6 +649,8 @@ def build_agent(cfg: AgentConfig):
         return state
 
     def news_node(state: AgentState) -> AgentState:
+        if state.get("chitchat_only"):
+            return state
         if not cfg.enable_news_tool:
             return state
         q = str(state.get("question") or "").strip().lower()
@@ -606,13 +683,15 @@ def build_agent(cfg: AgentConfig):
         "- NO hables de SQL ni de volumen/mercados salvo que el usuario lo pida explícitamente.\n"
         "- Si NEWS está vacío o hay news_error, di que no se pudieron cargar ahora y sugiere reintentar.\n"
     )
-
     def answer_node(state: AgentState) -> AgentState:
         q = str(state.get("question") or "")
         sql = str(state.get("sql") or "")
         rows = state.get("rows") or []
         news = state.get("news") or []
         preview = rows[:10] if isinstance(rows, list) else rows
+        if state.get("chitchat_only"):
+            state["answer"] = _chitchat_reply(q)
+            return state
         if state.get("news_only"):
             msg = llm.invoke(
                 [

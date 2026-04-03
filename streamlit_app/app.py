@@ -16,6 +16,11 @@ DEFAULT_SAVED_QUERIES: list[str] = [
 
 _SAVE_FILE = Path(__file__).resolve().parent / "saved_queries_user.json"
 
+# Clave del cuadro de texto inferior (sidebar la rellena aquí; tú pulsas Enviar).
+_DRAFT_KEY = "draft_query"
+# No tocar draft_query tras instanciar el widget; vaciar en el siguiente run.
+_CLEAR_DRAFT_FLAG = "_clear_draft_next"
+
 
 def _load_user_saved() -> list[str]:
     if not _SAVE_FILE.exists():
@@ -60,12 +65,14 @@ st.set_page_config(page_title="Polymarket CSGO Chatbot", layout="centered")
 st.title("Chatbot Polymarket (CSGO) · LangGraph + Neon")
 
 if "history" not in st.session_state:
-    # Cada item: {"question": str, "answer": str, "sql": str, "rows": [...], "news": [...], ...}
     st.session_state.history = []
 if "user_saved_queries" not in st.session_state:
     st.session_state.user_saved_queries = _load_user_saved()
-if "question_input" not in st.session_state:
-    st.session_state.question_input = ""
+if _DRAFT_KEY not in st.session_state:
+    st.session_state[_DRAFT_KEY] = ""
+if st.session_state.pop(_CLEAR_DRAFT_FLAG, False):
+    st.session_state[_DRAFT_KEY] = ""
+
 neon_url = _env("NEON_DATABASE_URL")
 llm_provider = (_env("LLM_PROVIDER", "ollama") or "ollama").strip().lower()
 openai_key = _env("OPENAI_API_KEY")
@@ -95,7 +102,7 @@ agent = build_agent(
 
 with st.sidebar:
     st.markdown("### Consultas guardadas")
-    st.caption("Incluye las 3 del enunciado; las que guardes se guardan en este equipo.")
+    st.caption("Pulsa una: el texto baja al cuadro de abajo; luego **Enviar**.")
     if st.button("Borrar conversación", use_container_width=True):
         st.session_state.history = []
         st.rerun()
@@ -103,13 +110,13 @@ with st.sidebar:
     for i, q in enumerate(all_q):
         label = q if len(q) <= 56 else q[:53] + "…"
         if st.button(label, key=f"load_saved_{i}", use_container_width=True):
-            st.session_state.question_input = q
+            st.session_state[_DRAFT_KEY] = q
             st.rerun()
 
 show_sql = st.toggle("Mostrar SQL / datos", value=True)
 st.caption("Bonus: si preguntas por noticias, usa HLTV (CSGO/CS2).")
 
-# Render chat
+# Historial tipo chat
 for item in st.session_state.history:
     if not isinstance(item, dict):
         continue
@@ -126,7 +133,7 @@ for item in st.session_state.history:
         if news:
             with st.expander("Noticias HLTV (raw)", expanded=False):
                 st.json(news)
-        if show_sql and not item.get("news_only"):
+        if show_sql and not item.get("news_only") and not item.get("chitchat_only"):
             sql = item.get("sql") or ""
             if sql:
                 st.code(sql, language="sql")
@@ -134,16 +141,22 @@ for item in st.session_state.history:
             if rows:
                 st.dataframe(rows, use_container_width=True)
 
-# Input de chat
-prompt = st.chat_input("Escribe tu pregunta…")
-if prompt:
-    st.session_state.question_input = prompt
-    q_text = prompt.strip()
+st.divider()
+st.markdown("**Tu pregunta** (edita si quieres y pulsa Enviar)")
+col_a, col_b = st.columns([4, 1])
+with col_a:
+    st.text_input(
+        "Pregunta",
+        key=_DRAFT_KEY,
+        placeholder="Escribe tu pregunta o elige una en la barra lateral…",
+        label_visibility="collapsed",
+    )
+with col_b:
+    send = st.button("Enviar", type="primary", use_container_width=True)
+
+if send:
+    q_text = (st.session_state.get(_DRAFT_KEY) or "").strip()
     if q_text:
-        # Guardar desde chat (sin interrumpir)
-        if q_text not in _merged_saved_queries(st.session_state.user_saved_queries):
-            # No guardamos automáticamente; el usuario decide desde el botón.
-            pass
         state = {"question": q_text}
         with st.spinner("Pensando… (Ollama puede tardar un poco)"):
             try:
@@ -153,12 +166,14 @@ if prompt:
         if out is None:
             out = {"question": q_text, "error": "El agente devolvió None.", "answer": ""}
         st.session_state.history.append(out)
+        st.session_state[_CLEAR_DRAFT_FLAG] = True
         st.rerun()
+    else:
+        st.warning("Escribe una pregunta o elige una guardada.")
 
-# Botón de guardar consulta actual (lo que haya en el input más reciente)
-if st.session_state.question_input.strip():
-    if st.button("Guardar la consulta actual", use_container_width=True):
-        q_text = st.session_state.question_input.strip()
+if (st.session_state.get(_DRAFT_KEY) or "").strip():
+    if st.button("Guardar la consulta del cuadro de texto", use_container_width=True):
+        q_text = st.session_state[_DRAFT_KEY].strip()
         merged = _merged_saved_queries(st.session_state.user_saved_queries)
         if q_text not in merged:
             st.session_state.user_saved_queries.append(q_text)
