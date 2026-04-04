@@ -46,7 +46,8 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # Airflow 3: /health devuelve 404; el monitor de la API v2 responde 200.
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v2/monitor/health"]
       interval: 30s
       timeout: 10s
       retries: 3

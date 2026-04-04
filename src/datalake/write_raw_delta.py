@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import pandas as pd
-from deltalake import write_deltalake
+from deltalake import DeltaTable, write_deltalake
 
 
 def _prepare_row(item: dict[str, Any]) -> dict[str, Any]:
@@ -28,6 +28,29 @@ def _sanitize_for_delta(df: pd.DataFrame) -> pd.DataFrame:
             else:
                 df[col] = df[col].astype("string")
     return df
+
+
+def _align_df_to_existing_delta_schema(
+    df: pd.DataFrame,
+    *,
+    delta_table_uri: str,
+    storage_options: dict[str, str] | None,
+) -> pd.DataFrame:
+    """
+    La API de Polymarket puede devolver distintos subconjuntos de campos por mercado.
+    En append, Delta exige compatibilidad de esquema; añadimos columnas faltantes como NULL
+    y usamos schema_mode='merge' para nuevas columnas en el batch.
+    """
+    try:
+        dt = DeltaTable(delta_table_uri, storage_options=storage_options or None)
+        existing = [f.name for f in dt.schema().fields]
+    except Exception:  # noqa: BLE001 — tabla aún no existe o URI inaccesible
+        return df
+    out = df.copy()
+    for col in existing:
+        if col not in out.columns:
+            out[col] = pd.Series([pd.NA] * len(out), dtype="object")
+    return out
 
 
 def write_raw_markets_delta_to_s3(
@@ -57,12 +80,17 @@ def write_raw_markets_delta_to_s3(
     if aws_session_token:
         storage_options["AWS_SESSION_TOKEN"] = aws_session_token
 
+    so = storage_options or None
+    if mode == "append":
+        df = _align_df_to_existing_delta_schema(df, delta_table_uri=delta_table_uri, storage_options=so)
+
     write_deltalake(
         delta_table_uri,
         df,
         mode=mode,
         partition_by=["_dt", "_hour"],
-        storage_options=storage_options or None,
+        storage_options=so,
+        schema_mode="merge" if mode == "append" else None,
     )
     return len(df)
 
